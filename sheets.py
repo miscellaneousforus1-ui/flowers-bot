@@ -18,8 +18,13 @@ F_VARIETY        = 3
 F_ROOT           = 4
 F_PURCHASE_PRICE = 5
 F_PURCHASE_DATE  = 6
-F_PLANTING_DATE  = 7
-F_STATUS         = 8
+F_STATUS         = 7
+F_NOTES          = 8
+
+FLOWERS_HEADERS = [
+    "ID", "Название", "Сорт", "Корневая система",
+    "Цена покупки", "Дата покупки", "Статус", "Заметки",
+]
 
 FIELD_COL = {
     "name":           F_NAME,
@@ -27,8 +32,8 @@ FIELD_COL = {
     "root":           F_ROOT,
     "purchase_price": F_PURCHASE_PRICE,
     "purchase_date":  F_PURCHASE_DATE,
-    "planting_date":  F_PLANTING_DATE,
     "status":         F_STATUS,
+    "notes":          F_NOTES,
 }
 
 
@@ -48,23 +53,34 @@ class SheetsManager:
         self.ss = self.client.open_by_key(spreadsheet_id)
         self._ensure_sheets()
 
-    # ── Инициализация листов ─────────────────────────────────────────────────
+    # ── Инициализация и миграция ─────────────────────────────────────────────
     def _ensure_sheets(self):
         existing = [ws.title for ws in self.ss.worksheets()]
 
         if FLOWERS_TAB not in existing:
             ws = self.ss.add_worksheet(FLOWERS_TAB, rows=1000, cols=8)
-            ws.append_row([
-                "ID", "Название", "Сорт", "Корневая система",
-                "Цена покупки", "Дата покупки", "Дата посадки", "Статус",
-            ])
+            ws.update("A1", [FLOWERS_HEADERS])
+        else:
+            ws = self.ss.worksheet(FLOWERS_TAB)
+            self._migrate_flowers(ws)
 
         if SALES_TAB not in existing:
             ws = self.ss.add_worksheet(SALES_TAB, rows=1000, cols=6)
-            ws.append_row([
+            ws.update("A1", [[
                 "ID", "ID цветка", "Название цветка",
                 "Тип продажи", "Цена", "Дата",
-            ])
+            ]])
+
+    def _migrate_flowers(self, ws):
+        """Удаляет колонку 'Дата посадки' если она есть, добавляет 'Заметки'."""
+        headers = ws.row_values(1)
+        # Удалить старую колонку «Дата посадки» (была col 7)
+        if len(headers) >= 7 and headers[6] == "Дата посадки":
+            ws.delete_columns(7)
+            headers = ws.row_values(1)
+        # Добавить «Заметки» если нет
+        if len(headers) < 8 or headers[7] != "Заметки":
+            ws.update_cell(1, 8, "Заметки")
 
     # ── Вспомогательные ──────────────────────────────────────────────────────
     def _flowers_ws(self):
@@ -96,9 +112,20 @@ class SheetsManager:
             "root":           row[F_ROOT - 1],
             "purchase_price": row[F_PURCHASE_PRICE - 1],
             "purchase_date":  row[F_PURCHASE_DATE - 1],
-            "planting_date":  row[F_PLANTING_DATE - 1],
             "status":         row[F_STATUS - 1],
+            "notes":          row[F_NOTES - 1],
         }
+
+    def _sort_flowers(self, ws):
+        """Сортирует строки с данными по названию (A→Я)."""
+        rows = ws.get_all_values()
+        if len(rows) <= 2:
+            return
+        header = rows[0]
+        data = [r for r in rows[1:] if any(r)]
+        data.sort(key=lambda r: r[F_NAME - 1].lower() if len(r) > F_NAME - 1 else "")
+        ws.clear()
+        ws.update("A1", [header] + data)
 
     # ── Цветы: создание ──────────────────────────────────────────────────────
     def add_flower(self, data: dict) -> str:
@@ -111,23 +138,22 @@ class SheetsManager:
             data["root"],
             data["purchase_price"],
             data["purchase_date"],
-            data["planting_date"],
             "живой",
+            data.get("notes", ""),
         ])
+        self._sort_flowers(ws)
         return flower_id
 
     # ── Цветы: поиск ─────────────────────────────────────────────────────────
     def find_flowers(self, query: str, status_filter: list = None) -> list:
         ws = self._flowers_ws()
-        rows = ws.get_all_values()
         q = query.lower()
         results = []
-        for row in rows[1:]:
+        for row in ws.get_all_values()[1:]:
             if not row or not row[0]:
                 continue
             f = self._row_to_flower(row)
-            name_match = q in f["name"].lower() or q in f["variety"].lower()
-            if not name_match:
+            if q not in f["name"].lower() and q not in f["variety"].lower():
                 continue
             if status_filter and f["status"] not in status_filter:
                 continue
@@ -135,16 +161,14 @@ class SheetsManager:
         return results
 
     def get_flower_by_id(self, flower_id: str) -> dict | None:
-        ws = self._flowers_ws()
-        for row in ws.get_all_values()[1:]:
+        for row in self._flowers_ws().get_all_values()[1:]:
             if row and row[0] == str(flower_id):
                 return self._row_to_flower(row)
         return None
 
     def get_all_flowers(self, status_filter: list = None) -> list:
-        ws = self._flowers_ws()
         results = []
-        for row in ws.get_all_values()[1:]:
+        for row in self._flowers_ws().get_all_values()[1:]:
             if not row or not row[0]:
                 continue
             f = self._row_to_flower(row)
@@ -162,6 +186,9 @@ class SheetsManager:
         for i, row in enumerate(ws.get_all_values(), start=1):
             if row and row[0] == str(flower_id):
                 ws.update_cell(i, col, value)
+                # Если изменилось название — пересортировать
+                if field == "name":
+                    self._sort_flowers(ws)
                 return
 
     # ── Цветы: удаление ──────────────────────────────────────────────────────
@@ -187,9 +214,8 @@ class SheetsManager:
         return sale_id
 
     def get_flower_sales(self, flower_id: str) -> list:
-        ws = self._sales_ws()
         sales = []
-        for row in ws.get_all_values()[1:]:
+        for row in self._sales_ws().get_all_values()[1:]:
             if row and len(row) >= 6 and row[1] == str(flower_id):
                 sales.append({
                     "id":          row[0],
@@ -200,3 +226,36 @@ class SheetsManager:
                     "date":        row[5],
                 })
         return sales
+
+    # ── Финансовая статистика ─────────────────────────────────────────────────
+    def get_financial_summary(self) -> dict:
+        flowers = self.get_all_flowers()
+
+        total_spent = 0.0
+        for f in flowers:
+            try:
+                total_spent += float(f["purchase_price"] or 0)
+            except ValueError:
+                pass
+
+        total_earned = 0.0
+        for row in self._sales_ws().get_all_values()[1:]:
+            if row and len(row) >= 5:
+                try:
+                    total_earned += float(row[4] or 0)
+                except ValueError:
+                    pass
+
+        alive  = sum(1 for f in flowers if f["status"] == "живой")
+        sold   = sum(1 for f in flowers if f["status"] == "продан")
+        dead   = sum(1 for f in flowers if f["status"] == "умер")
+
+        return {
+            "flower_count":  len(flowers),
+            "alive_count":   alive,
+            "sold_count":    sold,
+            "dead_count":    dead,
+            "total_spent":   total_spent,
+            "total_earned":  total_earned,
+            "profit":        total_earned - total_spent,
+        }

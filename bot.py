@@ -18,17 +18,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Состояния разговора ──────────────────────────────────────────────────────
+# ── Состояния ────────────────────────────────────────────────────────────────
 (
     MAIN_MENU,
-    ADD_NAME, ADD_VARIETY, ADD_ROOT, ADD_PRICE,
-    ADD_PURCHASE_DATE, ADD_PLANTING_DATE,
+    ADD_NAME, ADD_VARIETY, ADD_ROOT, ADD_PRICE, ADD_PURCHASE_DATE, ADD_NOTES,
     SALE_SEARCH, SALE_SELECT, SALE_TYPE, SALE_PRICE, SALE_DATE,
     FIND_SEARCH,
     LIST_FILTER,
-    EDIT_SEARCH, EDIT_SELECT_FLOWER, EDIT_FIELD, EDIT_VALUE,
+    EDIT_SEARCH, EDIT_SELECT_FLOWER, EDIT_FIELD, EDIT_VALUE, EDIT_CONFIRM,
     DELETE_CONFIRM,
-) = range(19)
+) = range(20)
 
 sheets = SheetsManager()
 
@@ -38,15 +37,18 @@ def main_keyboard():
         [
             ["➕ Добавить цветок", "💰 Записать продажу"],
             ["🔍 Найти цветок",    "📋 Список цветов"],
-            ["✏️ Редактировать"],
+            ["✏️ Редактировать",   "💵 Финансы"],
         ],
         resize_keyboard=True,
     )
 
 
-def fmt_date(s: str) -> str:
-    """Принимает dd.mm.yyyy, возвращает как есть или пустую строку."""
-    return s if s else "—"
+def _valid_date(s: str) -> bool:
+    try:
+        datetime.strptime(s, "%d.%m.%Y")
+        return True
+    except ValueError:
+        return False
 
 
 # ── /start ───────────────────────────────────────────────────────────────────
@@ -101,6 +103,23 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return EDIT_SEARCH
 
+    elif text == "💵 Финансы":
+        s = sheets.get_financial_summary()
+        profit = s["profit"]
+        profit_emoji = "📈" if profit >= 0 else "📉"
+        await update.message.reply_text(
+            f"💵 Финансы\n\n"
+            f"🌸 Всего цветков: {s['flower_count']}\n"
+            f"🟢 Живых: {s['alive_count']}\n"
+            f"💸 Проданных: {s['sold_count']}\n"
+            f"🔴 Умерших: {s['dead_count']}\n\n"
+            f"💰 Потрачено: {s['total_spent']:.0f} руб.\n"
+            f"💵 Заработано: {s['total_earned']:.0f} руб.\n"
+            f"{profit_emoji} Баланс: {profit:+.0f} руб.",
+            reply_markup=main_keyboard(),
+        )
+        return MAIN_MENU
+
     else:
         await update.message.reply_text(
             "Выбери действие из меню 👇", reply_markup=main_keyboard()
@@ -148,7 +167,7 @@ async def add_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("Сегодня", callback_data="pd_today")
     ]])
     await update.message.reply_text(
-        "Дата покупки? (формат дд.мм.гггг или нажми кнопку)", reply_markup=kb
+        "Дата покупки? (дд.мм.гггг или кнопка)", reply_markup=kb
     )
     return ADD_PURCHASE_DATE
 
@@ -159,7 +178,7 @@ async def add_purchase_date_btn(update: Update, context: ContextTypes.DEFAULT_TY
     today = datetime.now().strftime("%d.%m.%Y")
     context.user_data["flower"]["purchase_date"] = today
     await query.edit_message_text(f"Дата покупки: {today}")
-    return await _ask_planting_date(query.message)
+    return await _ask_notes(query.message)
 
 
 async def add_purchase_date_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -168,51 +187,43 @@ async def add_purchase_date_text(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("Формат: дд.мм.гггг. Попробуй ещё раз:")
         return ADD_PURCHASE_DATE
     context.user_data["flower"]["purchase_date"] = date_str
-    return await _ask_planting_date(update.message)
+    return await _ask_notes(update.message)
 
 
-async def _ask_planting_date(message):
+async def _ask_notes(message):
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("Такая же", callback_data="pl_same"),
-        InlineKeyboardButton("Сегодня",  callback_data="pl_today"),
+        InlineKeyboardButton("Пропустить", callback_data="notes_skip")
     ]])
     await message.reply_text(
-        "Дата посадки? (формат дд.мм.гггг или нажми кнопку)", reply_markup=kb
+        "Заметки? (любой текст или пропусти)", reply_markup=kb
     )
-    return ADD_PLANTING_DATE
+    return ADD_NOTES
 
 
-async def add_planting_date_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def add_notes_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["flower"]["notes"] = update.message.text.strip()
+    return await _save_flower(update.message, context)
+
+
+async def add_notes_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if query.data == "pl_same":
-        date = context.user_data["flower"]["purchase_date"]
-    else:
-        date = datetime.now().strftime("%d.%m.%Y")
-    context.user_data["flower"]["planting_date"] = date
-    await query.edit_message_text(f"Дата посадки: {date}")
+    context.user_data["flower"]["notes"] = ""
+    await query.edit_message_text("Заметки: —")
     return await _save_flower(query.message, context)
-
-
-async def add_planting_date_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    date_str = update.message.text.strip()
-    if not _valid_date(date_str):
-        await update.message.reply_text("Формат: дд.мм.гггг. Попробуй ещё раз:")
-        return ADD_PLANTING_DATE
-    context.user_data["flower"]["planting_date"] = date_str
-    return await _save_flower(update.message, context)
 
 
 async def _save_flower(message, context):
     f = context.user_data["flower"]
     sheets.add_flower(f)
+    notes_line = f"\nЗаметки: {f['notes']}" if f.get("notes") else ""
     await message.reply_text(
         f"✅ Цветок добавлен!\n\n"
         f"🌸 {f['name']} ({f['variety']})\n"
         f"Корневая система: {f['root']}\n"
         f"Куплен: {f['purchase_date']} за {f['purchase_price']} руб.\n"
-        f"Посажен: {f['planting_date']}\n"
-        f"Статус: 🟢 живой",
+        f"Статус: 🟢 живой"
+        f"{notes_line}",
         reply_markup=main_keyboard(),
     )
     context.user_data.clear()
@@ -223,13 +234,10 @@ async def _save_flower(message, context):
 # 💰 ЗАПИСАТЬ ПРОДАЖУ
 # ═══════════════════════════════════════════════════════════════════════════════
 async def sale_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query_text = update.message.text.strip()
-    flowers = sheets.find_flowers(query_text, status_filter=["живой"])
-
+    flowers = sheets.find_flowers(update.message.text.strip(), status_filter=["живой"])
     if not flowers:
         await update.message.reply_text(
-            "Живых цветов с таким названием не нашла. Попробуй ещё раз\n"
-            "или вернись в меню /start",
+            "Живых цветов с таким названием не нашла.\nПопробуй ещё раз или /start"
         )
         return SALE_SEARCH
 
@@ -250,7 +258,7 @@ async def sale_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def sale_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    flower_id = query.data[3:]  # strip "ss_"
+    flower_id = query.data[3:]
     context.user_data["sale_flower"] = context.user_data["found"][flower_id]
     f = context.user_data["sale_flower"]
     await query.edit_message_text(f"Выбран: {f['name']} {f['variety']}")
@@ -275,9 +283,8 @@ async def _ask_sale_type(message):
 async def sale_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    sale_type_val = query.data[3:]  # strip "st_"
-    context.user_data["sale_type"] = sale_type_val
-    await query.edit_message_text(f"Тип продажи: {sale_type_val}")
+    context.user_data["sale_type"] = query.data[3:]
+    await query.edit_message_text(f"Тип продажи: {query.data[3:]}")
     await query.message.reply_text("Цена продажи (руб)?")
     return SALE_PRICE
 
@@ -293,7 +300,7 @@ async def sale_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("Сегодня", callback_data="sd_today")
     ]])
     await update.message.reply_text(
-        "Дата продажи? (формат дд.мм.гггг или нажми кнопку)", reply_markup=kb
+        "Дата продажи? (дд.мм.гггг или кнопка)", reply_markup=kb
     )
     return SALE_DATE
 
@@ -317,10 +324,10 @@ async def sale_date_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _save_sale(message, context):
-    f = context.user_data["sale_flower"]
-    s_type = context.user_data["sale_type"]
-    price = context.user_data["sale_price"]
-    date = context.user_data["sale_date"]
+    f       = context.user_data["sale_flower"]
+    s_type  = context.user_data["sale_type"]
+    price   = context.user_data["sale_price"]
+    date    = context.user_data["sale_date"]
 
     sheets.add_sale(f["id"], f["name"], s_type, price, date)
 
@@ -347,9 +354,7 @@ async def _save_sale(message, context):
 # 🔍 НАЙТИ ЦВЕТОК
 # ═══════════════════════════════════════════════════════════════════════════════
 async def find_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query_text = update.message.text.strip()
-    flowers = sheets.find_flowers(query_text)
-
+    flowers = sheets.find_flowers(update.message.text.strip())
     if not flowers:
         await update.message.reply_text(
             "Цветок не найден.", reply_markup=main_keyboard()
@@ -366,13 +371,15 @@ async def find_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for s in sales:
                 sales_text += f"\n• {s['type']} — {s['price']} руб. ({s['date']})"
 
+        notes_line = f"\nЗаметки: {f['notes']}" if f.get("notes") else ""
         emoji = status_emoji.get(f["status"], "❓")
+
         text = (
             f"🌸 {f['name']} {f['variety']}\n"
             f"Корневая система: {f['root']}\n"
-            f"Куплен: {fmt_date(f['purchase_date'])} за {f['purchase_price']} руб.\n"
-            f"Посажен: {fmt_date(f['planting_date'])}\n"
+            f"Куплен: {f['purchase_date'] or '—'} за {f['purchase_price']} руб.\n"
             f"Статус: {emoji} {f['status']}"
+            f"{notes_line}"
             f"{sales_text}"
         )
         kb = InlineKeyboardMarkup([[
@@ -392,7 +399,7 @@ async def list_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    filter_val = query.data[5:]  # strip "list_"
+    filter_val = query.data[5:]
     status_filter = None if filter_val == "all" else [filter_val]
     flowers = sheets.get_all_flowers(status_filter)
 
@@ -415,9 +422,7 @@ async def list_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ✏️ РЕДАКТИРОВАТЬ
 # ═══════════════════════════════════════════════════════════════════════════════
 async def edit_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query_text = update.message.text.strip()
-    flowers = sheets.find_flowers(query_text)
-
+    flowers = sheets.find_flowers(update.message.text.strip())
     if not flowers:
         await update.message.reply_text(
             "Цветок не найден.", reply_markup=main_keyboard()
@@ -441,7 +446,7 @@ async def edit_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def edit_select_flower(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    flower_id = query.data[3:]  # strip "es_"
+    flower_id = query.data[3:]
     context.user_data["edit_flower"] = context.user_data["found"][flower_id]
     f = context.user_data["edit_flower"]
     await query.edit_message_text(f"Редактируем: {f['name']} {f['variety']}")
@@ -449,11 +454,9 @@ async def edit_select_flower(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def edit_from_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Редактировать из карточки (кнопка в find_search)."""
     query = update.callback_query
     await query.answer()
-    flower_id = query.data[3:]  # strip "ef_"
-    flower = sheets.get_flower_by_id(flower_id)
+    flower = sheets.get_flower_by_id(query.data[3:])
     if not flower:
         await query.answer("Цветок не найден", show_alert=True)
         return MAIN_MENU
@@ -473,10 +476,10 @@ async def _ask_edit_field(message):
         ],
         [
             InlineKeyboardButton("Дата покупки",     callback_data="efl_purchase_date"),
-            InlineKeyboardButton("Дата посадки",     callback_data="efl_planting_date"),
+            InlineKeyboardButton("Статус",           callback_data="efl_status"),
         ],
         [
-            InlineKeyboardButton("Статус",           callback_data="efl_status"),
+            InlineKeyboardButton("Заметки",          callback_data="efl_notes"),
         ],
     ])
     await message.reply_text("Что меняем?", reply_markup=kb)
@@ -486,7 +489,7 @@ async def _ask_edit_field(message):
 async def edit_field_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    field = query.data[4:]  # strip "efl_"
+    field = query.data[4:]
     context.user_data["edit_field"] = field
 
     if field == "root":
@@ -499,8 +502,8 @@ async def edit_field_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if field == "status":
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🟢 Живой", callback_data="ev_живой"),
-            InlineKeyboardButton("🔴 Умер",  callback_data="ev_умер"),
+            InlineKeyboardButton("🟢 Живой",  callback_data="ev_живой"),
+            InlineKeyboardButton("🔴 Умер",   callback_data="ev_умер"),
             InlineKeyboardButton("💸 Продан", callback_data="ev_продан"),
         ]])
         await query.edit_message_text("Новый статус:", reply_markup=kb)
@@ -511,25 +514,27 @@ async def edit_field_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "variety":        "сорт",
         "purchase_price": "цену покупки (число)",
         "purchase_date":  "дату покупки (дд.мм.гггг)",
-        "planting_date":  "дату посадки (дд.мм.гггг)",
+        "notes":          "заметки",
     }
     await query.edit_message_text(f"Введи новое {labels.get(field, field)}:")
     return EDIT_VALUE
 
 
+# Кнопочный выбор (root, status) → сразу сохраняем
 async def edit_value_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    new_value = query.data[3:]  # strip "ev_"
+    new_value = query.data[3:]
     await query.edit_message_text(f"Новое значение: {new_value}")
     return await _save_edit(query.message, context, new_value)
 
 
+# Текстовый ввод → показываем кнопку «Готово»
 async def edit_value_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_value = update.message.text.strip()
     field = context.user_data.get("edit_field", "")
 
-    if field in ("purchase_date", "planting_date"):
+    if field == "purchase_date":
         if not _valid_date(new_value):
             await update.message.reply_text("Формат: дд.мм.гггг. Попробуй ещё раз:")
             return EDIT_VALUE
@@ -541,12 +546,52 @@ async def edit_value_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Введи число, например: 350")
             return EDIT_VALUE
 
-    return await _save_edit(update.message, context, new_value)
+    context.user_data["edit_pending_value"] = new_value
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Готово",        callback_data="ec_yes"),
+        InlineKeyboardButton("✏️ Ввести заново", callback_data="ec_no"),
+    ]])
+    await update.message.reply_text(
+        f"Новое значение: {new_value}", reply_markup=kb
+    )
+    return EDIT_CONFIRM
+
+
+async def edit_confirm_yes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    new_value = context.user_data.get("edit_pending_value")
+    await query.edit_message_text(f"Сохраняю: {new_value}")
+    return await _save_edit(query.message, context, new_value)
+
+
+async def edit_confirm_no(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    field = context.user_data.get("edit_field", "")
+    labels = {
+        "name":           "название",
+        "variety":        "сорт",
+        "purchase_price": "цену покупки (число)",
+        "purchase_date":  "дату покупки (дд.мм.гггг)",
+        "notes":          "заметки",
+    }
+    await query.edit_message_text(f"Введи новое {labels.get(field, field)}:")
+    return EDIT_VALUE
 
 
 async def _save_edit(message, context, new_value):
-    flower = context.user_data["edit_flower"]
-    field = context.user_data["edit_field"]
+    flower = context.user_data.get("edit_flower")
+    field  = context.user_data.get("edit_field")
+
+    if not flower or not field:
+        await message.reply_text(
+            "Что-то пошло не так. Начни заново /start",
+            reply_markup=main_keyboard()
+        )
+        context.user_data.clear()
+        return MAIN_MENU
+
     sheets.update_flower_field(flower["id"], field, new_value)
     await message.reply_text(
         f"✅ Изменено!\n🌸 {flower['name']} {flower['variety']}",
@@ -562,8 +607,7 @@ async def _save_edit(message, context, new_value):
 async def delete_from_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    flower_id = query.data[3:]  # strip "df_"
-    flower = sheets.get_flower_by_id(flower_id)
+    flower = sheets.get_flower_by_id(query.data[3:])
     if not flower:
         await query.answer("Цветок не найден", show_alert=True)
         return MAIN_MENU
@@ -573,7 +617,7 @@ async def delete_from_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("Отмена",      callback_data="del_no"),
     ]])
     await query.message.reply_text(
-        f"Удалить «{flower['name']} {flower['variety']}»?\nЭто действие необратимо.",
+        f"Удалить «{flower['name']} {flower['variety']}»?\nДействие необратимо.",
         reply_markup=kb,
     )
     return DELETE_CONFIRM
@@ -601,15 +645,7 @@ async def delete_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MAIN_MENU
 
 
-# ── Вспомогательные ─────────────────────────────────────────────────────────
-def _valid_date(s: str) -> bool:
-    try:
-        datetime.strptime(s, "%d.%m.%Y")
-        return True
-    except ValueError:
-        return False
-
-
+# ── Отмена ───────────────────────────────────────────────────────────────────
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text("Отменено.", reply_markup=main_keyboard())
@@ -626,8 +662,8 @@ def main():
         states={
             MAIN_MENU: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, main_menu_handler),
-                CallbackQueryHandler(list_filter,     pattern=r"^list_"),
-                CallbackQueryHandler(edit_from_find,  pattern=r"^ef_"),
+                CallbackQueryHandler(list_filter,      pattern=r"^list_"),
+                CallbackQueryHandler(edit_from_find,   pattern=r"^ef_"),
                 CallbackQueryHandler(delete_from_find, pattern=r"^df_"),
             ],
             # Добавить цветок
@@ -639,9 +675,9 @@ def main():
                 CallbackQueryHandler(add_purchase_date_btn, pattern=r"^pd_today$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_purchase_date_text),
             ],
-            ADD_PLANTING_DATE: [
-                CallbackQueryHandler(add_planting_date_btn, pattern=r"^pl_(same|today)$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_planting_date_text),
+            ADD_NOTES: [
+                CallbackQueryHandler(add_notes_skip, pattern=r"^notes_skip$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_notes_text),
             ],
             # Продажа
             SALE_SEARCH:  [MessageHandler(filters.TEXT & ~filters.COMMAND, sale_search)],
@@ -657,12 +693,16 @@ def main():
             # Список
             LIST_FILTER: [CallbackQueryHandler(list_filter, pattern=r"^list_")],
             # Редактировать
-            EDIT_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_search)],
+            EDIT_SEARCH:        [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_search)],
             EDIT_SELECT_FLOWER: [CallbackQueryHandler(edit_select_flower, pattern=r"^es_")],
-            EDIT_FIELD:  [CallbackQueryHandler(edit_field_select, pattern=r"^efl_")],
+            EDIT_FIELD:         [CallbackQueryHandler(edit_field_select,  pattern=r"^efl_")],
             EDIT_VALUE: [
                 CallbackQueryHandler(edit_value_btn,  pattern=r"^ev_"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, edit_value_text),
+            ],
+            EDIT_CONFIRM: [
+                CallbackQueryHandler(edit_confirm_yes, pattern=r"^ec_yes$"),
+                CallbackQueryHandler(edit_confirm_no,  pattern=r"^ec_no$"),
             ],
             # Удалить
             DELETE_CONFIRM: [
