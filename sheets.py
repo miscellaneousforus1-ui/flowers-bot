@@ -80,6 +80,7 @@ class SheetsManager:
             headers = ws.row_values(1)
         # Добавить «Заметки» если нет
         if len(headers) < 8 or headers[7] != "Заметки":
+            ws.resize(rows=1000, cols=8)  # расширяем до 8 колонок
             ws.update_cell(1, 8, "Заметки")
 
     # ── Вспомогательные ──────────────────────────────────────────────────────
